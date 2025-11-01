@@ -453,8 +453,8 @@
     /* ===== GOOGLE DRIVE UPLOAD ===== */
     async function uploadRecordingsToGoogleDrive() {
       if (!GAS_ENDPOINT || GAS_ENDPOINT === 'YOUR_APPS_SCRIPT_URL') {
-        console.warn('No Google Apps Script endpoint configured.');
-        downloadRecordingsAsZip();
+        console.error('Google Apps Script endpoint not configured!');
+        alert('업로드 실패: Google Apps Script URL이 설정되지 않았습니다.');
         return;
       }
 
@@ -486,10 +486,11 @@
           console.log(`Uploaded recording ${i + 1}/${recordedBlobs.length}`);
         }
 
-        console.log('All recordings uploaded successfully');
+        console.log('All recordings uploaded successfully to Google Drive');
+        alert('모든 녹음 파일이 성공적으로 업로드되었습니다!');
       } catch (err) {
         console.error('Upload error:', err);
-        downloadRecordingsAsZip();
+        alert('업로드 중 오류가 발생했습니다: ' + err.message);
       }
     }
 
@@ -500,19 +501,6 @@
         reader.onerror = reject;
         reader.readAsDataURL(blob);
       });
-    }
-
-    /* ===== FALLBACK: LOCAL DOWNLOAD ===== */
-    function downloadRecordingsAsZip() {
-      recordedBlobs.forEach((item, index) => {
-        const url = URL.createObjectURL(item.blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `recording_${participantId}_${index + 1}_${item.sentence}.wav`;
-        a.click();
-        URL.revokeObjectURL(url);
-      });
-      console.log('Downloaded all recordings locally as WAV');
     }
   </script>
 </body>
