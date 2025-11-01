@@ -95,7 +95,7 @@
     console.log('Script starting...');
 
     /* ===== CONFIG ===== */
-    const GAS_ENDPOINT = 'https://script.google.com/macros/s/AKfycbyGAuNG2gQN-aekZ4u25-n6wpEj0mvfYK5qwbGxfrdsI-f7yyZ01aoskLsOv13cxk53OQ/exec';
+    const GAS_ENDPOINT = 'https://script.google.com/macros/s/AKfycbz32LJzDu_xQBKp7FjAdrOBNjRtUNKfSfAVS2Y4uelg6c4-NOL66hmlYsXwT_uxSLfQLw/exec';
 
     /* ===== UI TEXTS ===== */
     const TEXTS = {
@@ -236,7 +236,7 @@
               stopBtn.disabled = true;
               
               if (statusEl) {
-                statusEl.innerHTML = TEXTS.stopped;
+                statusEl.innerHTML = 'WAV로 변환 중...';
                 statusEl.classList.remove('recording-active');
               }
               
@@ -246,16 +246,26 @@
                 currentTimerInterval = null;
               }
               
-              // 녹음 파일 저장
+              // 녹음 파일을 WAV로 변환하여 저장
               if (audioChunks.length > 0) {
-                const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                const webmBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                console.log('WebM blob size:', webmBlob.size, 'bytes');
+                
+                // WebM을 WAV로 변환
+                const wavBlob = await convertWebMToWav(webmBlob);
+                console.log('WAV blob size:', wavBlob.size, 'bytes');
+                
                 recordedBlobs.push({
                   sentence: sentence,
                   index: index,
-                  blob: audioBlob,
+                  blob: wavBlob,
                   timestamp: new Date().toISOString()
                 });
-                console.log(`Recording ${index + 1} saved:`, audioBlob.size, 'bytes');
+                console.log(`Recording ${index + 1} saved as WAV:`, wavBlob.size, 'bytes');
+              }
+              
+              if (statusEl) {
+                statusEl.innerHTML = TEXTS.stopped;
               }
               
               // 다음 버튼 표시
@@ -274,6 +284,9 @@
               console.log('Recording stopped by user');
             } catch (err) {
               console.error('Failed to stop recording:', err);
+              if (statusEl) {
+                statusEl.innerHTML = '오류 발생: ' + err.message;
+              }
             }
           };
         }
@@ -284,7 +297,10 @@
     async function startRecording() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        mediaRecorder = new MediaRecorder(stream);
+        
+        // WAV 포맷을 위한 옵션 설정
+        const options = { mimeType: 'audio/webm' }; // 브라우저는 webm으로 녹음
+        mediaRecorder = new MediaRecorder(stream, options);
         
         mediaRecorder.ondataavailable = (event) => {
           if (event.data.size > 0) {
@@ -315,6 +331,64 @@
         
         mediaRecorder.stop();
       });
+    }
+
+    /* ===== WEBM TO WAV CONVERSION ===== */
+    async function convertWebMToWav(webmBlob) {
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const arrayBuffer = await webmBlob.arrayBuffer();
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+      
+      // WAV 파일 생성
+      const wavBlob = audioBufferToWav(audioBuffer);
+      return wavBlob;
+    }
+
+    function audioBufferToWav(audioBuffer) {
+      const numChannels = audioBuffer.numberOfChannels;
+      const sampleRate = audioBuffer.sampleRate;
+      const format = 1; // PCM
+      const bitDepth = 16;
+      
+      const bytesPerSample = bitDepth / 8;
+      const blockAlign = numChannels * bytesPerSample;
+      
+      const samples = audioBuffer.getChannelData(0);
+      const dataLength = samples.length * blockAlign;
+      
+      const buffer = new ArrayBuffer(44 + dataLength);
+      const view = new DataView(buffer);
+      
+      // WAV 헤더 작성
+      writeString(view, 0, 'RIFF');
+      view.setUint32(4, 36 + dataLength, true);
+      writeString(view, 8, 'WAVE');
+      writeString(view, 12, 'fmt ');
+      view.setUint32(16, 16, true); // fmt chunk size
+      view.setUint16(20, format, true);
+      view.setUint16(22, numChannels, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * blockAlign, true);
+      view.setUint16(32, blockAlign, true);
+      view.setUint16(34, bitDepth, true);
+      writeString(view, 36, 'data');
+      view.setUint32(40, dataLength, true);
+      
+      // 오디오 데이터 작성
+      const offset = 44;
+      for (let i = 0; i < samples.length; i++) {
+        const sample = Math.max(-1, Math.min(1, samples[i]));
+        const int16 = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+        view.setInt16(offset + i * 2, int16, true);
+      }
+      
+      return new Blob([buffer], { type: 'audio/wav' });
+    }
+
+    function writeString(view, offset, string) {
+      for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i));
+      }
     }
 
     /* ===== DEMOGRAPHICS ===== */
@@ -378,7 +452,7 @@
 
     /* ===== GOOGLE DRIVE UPLOAD ===== */
     async function uploadRecordingsToGoogleDrive() {
-      if (!GAS_ENDPOINT || GAS_ENDPOINT === 'https://script.google.com/macros/s/AKfycbyGAuNG2gQN-aekZ4u25-n6wpEj0mvfYK5qwbGxfrdsI-f7yyZ01aoskLsOv13cxk53OQ/exec') {
+      if (!GAS_ENDPOINT || GAS_ENDPOINT === 'YOUR_APPS_SCRIPT_URL') {
         console.warn('No Google Apps Script endpoint configured.');
         downloadRecordingsAsZip();
         return;
@@ -434,11 +508,11 @@
         const url = URL.createObjectURL(item.blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `recording_${participantId}_${index + 1}_${item.sentence}.webm`;
+        a.download = `recording_${participantId}_${index + 1}_${item.sentence}.wav`;
         a.click();
         URL.revokeObjectURL(url);
       });
-      console.log('Downloaded all recordings locally');
+      console.log('Downloaded all recordings locally as WAV');
     }
   </script>
 </body>
