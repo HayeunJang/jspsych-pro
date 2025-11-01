@@ -95,7 +95,7 @@
     console.log('Script starting...');
 
     /* ===== CONFIG ===== */
-    const GAS_ENDPOINT = 'https://script.google.com/macros/s/AKfycbwosYp-_QYiNIxzXrB9kK3pVNoU9M_3djYrYUaIlX0V5MvrkdKZjVdvBLOuw_O_7NRM-g/exec';
+    const GAS_ENDPOINT = 'https://script.google.com/macros/s/AKfycbxd0V2jKSCZ0qUnRrUJSQKRmxiS1OZc6XJNgvrd6nKsFPGxX71Vfi0Dh_68bggK8HY_8w/exec';
 
     /* ===== UI TEXTS ===== */
     const TEXTS = {
@@ -139,7 +139,12 @@
     const welcome = {
       type: jsPsychHtmlButtonResponse,
       stimulus: `<h2>${TEXTS.welcomeTitle}</h2><p>${TEXTS.welcomeBody}</p>`,
-      choices: [TEXTS.startBtn]
+      choices: [TEXTS.startBtn],
+      on_finish: () => {
+        // 실험 시작 시 participant_id 생성
+        participantId = 'P' + Date.now();
+        console.log('Participant ID created:', participantId);
+      }
     };
 
     /* ===== MICROPHONE PERMISSION ===== */
@@ -456,8 +461,8 @@
     jsPsych.run([
       welcome,
       mic_permission,
-      ...recording_trials,
-      demographics,
+      ...recording_trials, // 녹음 먼저
+      demographics,        // 인적사항 나중에
       end
     ]);
 
