@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Speech Recording Experiment</title>
+  <link rel="stylesheet" href="https://unpkg.com/jspsych@8.0.0/css/jspsych.css">
+  <script src="https://unpkg.com/jspsych@8.0.0"></script>
+  <script src="https://unpkg.com/@jspsych/plugin-html-button-response@2.0.0"></script>
+  <script src="https://unpkg.com/@jspsych/plugin-survey-html-form@2.0.0"></script>
+  <style>
+    .recording-container {
+      text-align: center;
+      padding: 40px;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+    .sentence-display {
+      font-size: 28px;
+      font-weight: bold;
+      padding: 30px;
+      margin: 30px 0;
+      background: #f0f0f0;
+      border-radius: 10px;
+      line-height: 1.6;
+    }
+    .recording-status {
+      font-size: 20px;
+      margin: 20px 0;
+      min-height: 30px;
+    }
+    .recording-active {
+      color: #dc3545;
+      animation: blink 1s infinite;
+    }
+    @keyframes blink {
+      0%, 50% { opacity: 1; }
+      51%, 100% { opacity: 0.3; }
+    }
+    .timer {
+      font-size: 24px;
+      font-weight: bold;
+      margin: 15px 0;
+    }
+    .next-button {
+      font-size: 18px;
+      padding: 15px 40px;
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div id="jspsych-target"></div>
+  
+  <script>
+    /******************************************************
+     * Speech Recording Experiment
+     ******************************************************/
+
+    /* ===== CONFIG ===== */
+    const GAS_ENDPOINT = 'YOUR_APPS_SCRIPT_URL';  // TODO: Apps Script URL
+    const BEEP_DURATION = 500; // 삐 소리 길이 (ms)
+
+    /* ===== UI TEXTS ===== */
+    const TEXTS = {
+      welcomeTitle: 'Speech Recording Experiment',
+      welcomeBody: '화면에 표시되는 문장을 자연스럽게 읽어주세요.<br>삐 소리가 나면 녹음이 시작됩니다.<br><strong>조용한 환경에서 진행해주세요.</strong>',
+      startBtn: 'Start',
+      recordingReady: '준비...',
+      recordingActive: '🔴 녹음 중...',
+      recordingDone: '녹음 완료! 다음 버튼을 눌러주세요.',
+      nextBtn: '다음',
+      endTitle: '감사합니다!',
+      endBody: '실험이 완료되었습니다. 녹음 파일을 업로드 중입니다...',
+      finishBtn: '종료'
+    };
+
+    /* ===== SENTENCES TO RECORD ===== */
+    const SENTENCES = [
+      "오늘 날씨가 정말 좋네요",
+      "어제 친구를 만나서 영화를 봤어요",
+      "이번 주말에 등산을 갈 계획이에요",
+      "커피 한 잔 마시면서 이야기할까요",
+      "도서관에서 책을 빌려서 읽고 있어요"
+    ];
+
+    /* ===== GLOBAL STATE ===== */
+    let mediaRecorder = null;
+    let audioChunks = [];
+    let recordedBlobs = []; // 모든 녹음 파일 저장
+    let participantId = null;
+
+    /* ===== INIT ===== */
+    const jsPsych = initJsPsych({
+      display_element: 'jspsych-target',
+      on_finish: async () => {
+        await uploadRecordingsToGoogleDrive();
+      }
+    });
+
+    /* ===== WELCOME ===== */
+    const welcome = {
+      type: jsPsychHtmlButtonResponse,
+      stimulus: `<h2>${TEXTS.welcomeTitle}</h2><p>${TEXTS.welcomeBody}</p>`,
+      choices: [TEXTS.startBtn]
+    };
+
+    /* ===== MICROPHONE PERMISSION ===== */
+    const mic_permission = {
+      type: jsPsychHtmlButtonResponse,
+      stimulus: '<h3>마이크 권한 요청</h3><p>녹음을 위해 마이크 사용을 허용해주세요.</p>',
+      choices: ['마이크 허용'],
+      on_finish: async () => {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          stream.getTracks().forEach(track => track.stop()); // 권한만 받고 중지
+          console.log('Microphone permission granted');
+        } catch (err) {
+          alert('마이크 권한이 필요합니다. 브라우저 설정에서 마이크를 허용해주세요.');
+          console.error('Microphone error:', err);
+        }
+      }
+    };
+
+    /* ===== RECORDING TRIAL FACTORY ===== */
+    function makeRecordingTrial(sentence, index) {
+      return {
+        type: jsPsychHtmlButtonResponse,
+        stimulus: () => {
+          return `
+            <div class="recording-container">
+              <div class="sentence-display">${sentence}</div>
+              <div class="recording-status" id="status">${TEXTS.recordingReady}</div>
+              <div class="timer" id="timer"></div>
+            </div>
+          `;
+        },
+        choices: [TEXTS.nextBtn],
+        button_html: '<button class="jspsych-btn next-button" style="display:none;">%choice%</button>',
+        on_load: async function() {
+          audioChunks = [];
+          
+          // 2초 대기
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          
+          // 삐 소리 재생
+          await playBeep();
+          
+          // 녹음 시작
+          await startRecording();
+          
+          // 상태 업데이트
+          document.getElementById('status').innerHTML = TEXTS.recordingActive;
+          document.getElementById('status').classList.add('recording-active');
+          
+          // 타이머 표시 (선택사항)
+          let seconds = 0;
+          const timerInterval = setInterval(() => {
+            seconds++;
+            const timerEl = document.getElementById('timer');
+            if (timerEl) {
+              timerEl.textContent = `${seconds}초`;
+            }
+          }, 1000);
+          
+          // 녹음 중지는 사용자가 다음 버튼 누를 때까지 계속
+          // 버튼 표시
+          setTimeout(() => {
+            const btn = document.querySelector('.next-button');
+            if (btn) btn.style.display = 'inline-block';
+            document.getElementById('status').innerHTML = TEXTS.recordingDone;
+            document.getElementById('status').classList.remove('recording-active');
+            clearInterval(timerInterval);
+          }, 3000); // 최소 3초 후 다음 버튼 활성화
+        },
+        on_finish: async (data) => {
+          // 녹음 중지
+          if (mediaRecorder && mediaRecorder.state === 'recording') {
+            await stopRecording();
+          }
+          
+          // 녹음 파일 저장
+          if (audioChunks.length > 0) {
+            const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+            recordedBlobs.push({
+              sentence: sentence,
+              index: index,
+              blob: audioBlob,
+              timestamp: new Date().toISOString()
+            });
+            console.log(`Recording ${index + 1} saved:`, audioBlob.size, 'bytes');
+          }
+          
+          data.task = 'recording';
+          data.sentence = sentence;
+          data.sentence_index = index;
+          data.timestamp = new Date().toISOString();
+        }
+      };
+    }
+
+    /* ===== BEEP SOUND ===== */
+    function playBeep() {
+      return new Promise((resolve) => {
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const oscillator = audioContext.createOscillator();
+        const gainNode = audioContext.createGain();
+        
+        oscillator.connect(gainNode);
+        gainNode.connect(audioContext.destination);
+        
+        oscillator.frequency.value = 800; // 800Hz
+        oscillator.type = 'sine';
+        gainNode.gain.value = 0.3;
+        
+        oscillator.start();
+        setTimeout(() => {
+          oscillator.stop();
+          resolve();
+        }, BEEP_DURATION);
+      });
+    }
+
+    /* ===== RECORDING FUNCTIONS ===== */
+    async function startRecording() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaRecorder = new MediaRecorder(stream);
+        
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            audioChunks.push(event.data);
+          }
+        };
+        
+        mediaRecorder.start();
+        console.log('Recording started');
+      } catch (err) {
+        console.error('Recording error:', err);
+        alert('녹음을 시작할 수 없습니다: ' + err.message);
+      }
+    }
+
+    function stopRecording() {
+      return new Promise((resolve) => {
+        if (!mediaRecorder) {
+          resolve();
+          return;
+        }
+        
+        mediaRecorder.onstop = () => {
+          mediaRecorder.stream.getTracks().forEach(track => track.stop());
+          resolve();
+        };
+        
+        mediaRecorder.stop();
+        console.log('Recording stopped');
+      });
+    }
+
+    /* ===== DEMOGRAPHICS ===== */
+    const demographics = {
+      type: jsPsychSurveyHtmlForm,
+      preamble: '<h3>참가자 정보</h3><p>아래 정보를 입력해주세요.</p>',
+      html: `
+        <div style="text-align: left; max-width: 500px; margin: 0 auto;">
+          <p><label for="gender"><strong>성별:</strong></label><br>
+          <input type="radio" name="gender" value="남" required> 남
+          <input type="radio" name="gender" value="여" required> 여</p>
+          
+          <p><label for="birth_year"><strong>태어난 해:</strong></label><br>
+          <input type="text" id="birth_year" name="birth_year" placeholder="YYYY (예: 1995)" pattern="[0-9]{4}" required style="width: 150px;"></p>
+          
+          <p><label for="birth_month"><strong>태어난 월:</strong></label><br>
+          <input type="text" id="birth_month" name="birth_month" placeholder="MM (예: 03)" pattern="[0-9]{2}" required style="width: 80px;"></p>
+          
+          <p><label for="native_lang"><strong>모국어:</strong></label><br>
+          <input type="text" id="native_lang" name="native_lang" placeholder="예: 한국어" required style="width: 200px;"></p>
+          
+          <p><label for="dialect"><strong>방언:</strong></label><br>
+          <input type="text" id="dialect" name="dialect" placeholder="예: 서울, 경상도" style="width: 200px;"></p>
+          
+          <p><label for="foreign_lang"><strong>외국어:</strong></label><br>
+          <input type="text" id="foreign_lang" name="foreign_lang" placeholder="예: 영어, 일본어" style="width: 300px;"></p>
+        </div>
+      `,
+      button_label: '제출',
+      data: { task: 'demographics' },
+      on_finish: (data) => {
+        data.timestamp = new Date().toISOString();
+        // participant_id 생성 (timestamp 기반)
+        participantId = 'P' + Date.now();
+        data.participant_id = participantId;
+        console.log('Participant ID:', participantId);
+        console.log('Demographics:', data.response);
+      }
+    };
+
+    /* ===== END ===== */
+    const end = {
+      type: jsPsychHtmlButtonResponse,
+      stimulus: `<h2>${TEXTS.endTitle}</h2><p>${TEXTS.endBody}</p>`,
+      choices: [TEXTS.finishBtn]
+    };
+
+    /* ===== BUILD TIMELINE ===== */
+    const recording_trials = SENTENCES.map((sentence, index) => 
+      makeRecordingTrial(sentence, index)
+    );
+
+    /* ===== RUN ===== */
+    jsPsych.run([
+      welcome,
+      mic_permission,
+      ...recording_trials,
+      demographics,
+      end
+    ]);
+
+    /* ===== GOOGLE DRIVE UPLOAD ===== */
+    async function uploadRecordingsToGoogleDrive() {
+      if (!GAS_ENDPOINT || GAS_ENDPOINT === 'YOUR_APPS_SCRIPT_URL') {
+        console.warn('No Google Apps Script endpoint configured.');
+        downloadRecordingsAsZip(); // fallback: 로컬 다운로드
+        return;
+      }
+
+      try {
+        const demoData = jsPsych.data.get().filter({task: 'demographics'}).values()[0];
+        const demographics = demoData?.response || {};
+
+        for (let i = 0; i < recordedBlobs.length; i++) {
+          const item = recordedBlobs[i];
+          
+          // Blob을 Base64로 변환
+          const base64Audio = await blobToBase64(item.blob);
+          
+          const payload = {
+            participant_id: participantId || 'unknown',
+            sentence_index: item.index,
+            sentence: item.sentence,
+            audio_data: base64Audio,
+            timestamp: item.timestamp,
+            demographics: demographics
+          };
+
+          await fetch(GAS_ENDPOINT, {
+            method: 'POST',
+            mode: 'no-cors',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+
+          console.log(`Uploaded recording ${i + 1}/${recordedBlobs.length}`);
+        }
+
+        console.log('All recordings uploaded successfully');
+      } catch (err) {
+        console.error('Upload error:', err);
+        downloadRecordingsAsZip(); // fallback
+      }
+    }
+
+    function blobToBase64(blob) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+    }
+
+    /* ===== FALLBACK: LOCAL DOWNLOAD ===== */
+    function downloadRecordingsAsZip() {
+      recordedBlobs.forEach((item, index) => {
+        const url = URL.createObjectURL(item.blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `recording_${index + 1}_${item.sentence.substring(0, 10)}.webm`;
+        a.click();
+        URL.revokeObjectURL(url);
+      });
+      console.log('Downloaded all recordings locally');
+    }
+  </script>
+</body>
+</html>
