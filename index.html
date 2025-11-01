@@ -122,7 +122,6 @@
     /* ===== GLOBAL STATE ===== */
     let mediaRecorder = null;
     let audioChunks = [];
-    let recordedBlobs = [];
     let participantId = null;
     let currentTimerInterval = null;
     let isRecording = false;
@@ -131,8 +130,8 @@
     const jsPsych = initJsPsych({
       display_element: 'jspsych-target',
       on_finish: async () => {
-        console.log('Experiment finished, uploading...');
-        await uploadRecordingsToGoogleDrive();
+        console.log('Experiment finished');
+        // 업로드는 이미 각 녹음 후 완료됨
       }
     });
 
@@ -246,7 +245,7 @@
                 currentTimerInterval = null;
               }
               
-              // 녹음 파일을 WAV로 변환하여 저장
+              // 녹음 파일을 WAV로 변환
               if (audioChunks.length > 0) {
                 const webmBlob = new Blob(audioChunks, { type: 'audio/webm' });
                 console.log('WebM blob size:', webmBlob.size, 'bytes');
@@ -255,17 +254,29 @@
                 const wavBlob = await convertWebMToWav(webmBlob);
                 console.log('WAV blob size:', wavBlob.size, 'bytes');
                 
-                recordedBlobs.push({
+                // 즉시 업로드
+                if (statusEl) {
+                  statusEl.innerHTML = '⏳ 업로드 중...';
+                }
+                
+                const success = await uploadSingleRecording({
                   sentence: sentence,
                   index: index,
                   blob: wavBlob,
                   timestamp: new Date().toISOString()
                 });
-                console.log(`Recording ${index + 1} saved as WAV:`, wavBlob.size, 'bytes');
-              }
-              
-              if (statusEl) {
-                statusEl.innerHTML = TEXTS.stopped;
+                
+                if (success) {
+                  console.log(`Recording ${index + 1} uploaded successfully`);
+                  if (statusEl) {
+                    statusEl.innerHTML = '✅ 업로드 완료! 다음 버튼을 눌러주세요.';
+                  }
+                } else {
+                  console.error(`Failed to upload recording ${index + 1}`);
+                  if (statusEl) {
+                    statusEl.innerHTML = '❌ 업로드 실패. 다음 버튼을 눌러주세요.';
+                  }
+                }
               }
               
               // 다음 버튼 표시
@@ -431,7 +442,7 @@
     /* ===== END ===== */
     const end = {
       type: jsPsychHtmlButtonResponse,
-      stimulus: `<h2>${TEXTS.endTitle}</h2><p>${TEXTS.endBody}</p>`,
+      stimulus: `<h2>${TEXTS.endTitle}</h2><p>실험이 완료되었습니다. 감사합니다!</p>`,
       choices: [TEXTS.finishBtn]
     };
 
@@ -450,47 +461,59 @@
       end
     ]);
 
-    /* ===== GOOGLE DRIVE UPLOAD ===== */
-    async function uploadRecordingsToGoogleDrive() {
+    /* ===== GOOGLE DRIVE UPLOAD - 개별 녹음 즉시 업로드 ===== */
+    async function uploadSingleRecording(recordingData) {
       if (!GAS_ENDPOINT || GAS_ENDPOINT === 'YOUR_APPS_SCRIPT_URL') {
         console.error('Google Apps Script endpoint not configured!');
         alert('업로드 실패: Google Apps Script URL이 설정되지 않았습니다.');
-        return;
+        return false;
       }
 
       try {
+        // demographics 정보 가져오기 (이미 입력된 경우)
         const demoData = jsPsych.data.get().filter({task: 'demographics'}).values()[0];
         const demographics = demoData?.response || {};
 
-        for (let i = 0; i < recordedBlobs.length; i++) {
-          const item = recordedBlobs[i];
-          
-          const base64Audio = await blobToBase64(item.blob);
-          
-          const payload = {
-            participant_id: participantId || 'unknown',
-            sentence_index: item.index,
-            sentence: item.sentence,
-            audio_data: base64Audio,
-            timestamp: item.timestamp,
-            demographics: demographics
-          };
+        const base64Audio = await blobToBase64(recordingData.blob);
+        
+        const payload = {
+          participant_id: participantId || 'unknown',
+          sentence_index: recordingData.index,
+          sentence: recordingData.sentence,
+          audio_data: base64Audio,
+          timestamp: recordingData.timestamp,
+          demographics: demographics
+        };
 
-          await fetch(GAS_ENDPOINT, {
-            method: 'POST',
-            mode: 'no-cors',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-          });
+        console.log(`Uploading recording ${recordingData.index + 1}...`);
+        console.log('Payload (without audio_data):', {
+          ...payload,
+          audio_data: `[${base64Audio.length} bytes]`
+        });
 
-          console.log(`Uploaded recording ${i + 1}/${recordedBlobs.length}`);
+        const response = await fetch(GAS_ENDPOINT, {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(payload),
+          redirect: 'follow'
+        });
+
+        const responseText = await response.text();
+        console.log(`Response:`, responseText);
+
+        if (!response.ok || responseText.includes('error')) {
+          throw new Error(`Upload failed: ${responseText}`);
         }
 
-        console.log('All recordings uploaded successfully to Google Drive');
-        alert('모든 녹음 파일이 성공적으로 업로드되었습니다!');
+        console.log(`Successfully uploaded recording ${recordingData.index + 1}`);
+        return true;
+        
       } catch (err) {
         console.error('Upload error:', err);
-        alert('업로드 중 오류가 발생했습니다: ' + err.message);
+        alert(`녹음 ${recordingData.index + 1} 업로드 실패: ${err.message}\n관리자에게 문의해주세요.`);
+        return false;
       }
     }
 
@@ -505,5 +528,3 @@
   </script>
 </body>
 </html>
-
-
